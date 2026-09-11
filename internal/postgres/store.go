@@ -65,6 +65,11 @@ type CreateExpenseParams struct {
 	CorrelationID  string
 }
 
+type Balance struct {
+	UserID      string `json:"userId"`
+	AmountMinor int64  `json:"amountMinor"`
+}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -362,6 +367,99 @@ func (s *Store) CreateExpense(ctx context.Context, p CreateExpenseParams) (Expen
 	return expense, false, nil
 }
 
+func (s *Store) ListExpenses(ctx context.Context, groupID, actorID string, limit int) ([]Expense, error) {
+	if err := s.RequireMember(ctx, groupID, actorID); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT id,group_id,payer_id,actor_id,description,amount_minor,currency,
+		       split_strategy,status,revision
+		FROM expenses WHERE group_id=$1 ORDER BY created_at DESC,id LIMIT $2`, groupID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Expense
+	for rows.Next() {
+		var expense Expense
+		if err := rows.Scan(&expense.ID, &expense.GroupID, &expense.PayerID, &expense.ActorID,
+			&expense.Description, &expense.AmountMinor, &expense.Currency, &expense.SplitStrategy,
+			&expense.Status, &expense.Revision); err != nil {
+			return nil, err
+		}
+		out = append(out, expense)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ExpenseByID(ctx context.Context, expenseID, actorID string) (Expense, error) {
+	var expense Expense
+	err := s.Pool.QueryRow(ctx, `
+		SELECT e.id,e.group_id,e.payer_id,e.actor_id,e.description,e.amount_minor,e.currency,
+		       e.split_strategy,e.status,e.revision
+		FROM expenses e JOIN group_members gm ON gm.group_id=e.group_id
+		WHERE e.id=$1 AND gm.user_id=$2`, expenseID, actorID).
+		Scan(&expense.ID, &expense.GroupID, &expense.PayerID, &expense.ActorID,
+			&expense.Description, &expense.AmountMinor, &expense.Currency, &expense.SplitStrategy,
+			&expense.Status, &expense.Revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Expense{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return Expense{}, err
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT user_id,amount_minor FROM expense_splits
+		WHERE expense_id=$1 AND revision=$2 ORDER BY user_id`, expense.ID, expense.Revision)
+	if err != nil {
+		return Expense{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var split domain.Split
+		if err := rows.Scan(&split.UserID, &split.AmountMinor); err != nil {
+			return Expense{}, err
+		}
+		expense.Splits = append(expense.Splits, split)
+	}
+	return expense, rows.Err()
+}
+
+func (s *Store) LedgerBalances(ctx context.Context, groupID, actorID string) ([]Balance, error) {
+	if err := s.RequireMember(ctx, groupID, actorID); err != nil {
+		return nil, err
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT gm.user_id,COALESCE(sum(le.amount_minor),0)
+		FROM group_members gm
+		LEFT JOIN ledger_entries le ON le.group_id=gm.group_id AND le.user_id=gm.user_id
+		WHERE gm.group_id=$1 GROUP BY gm.user_id ORDER BY gm.user_id`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Balance
+	var sum int64
+	for rows.Next() {
+		var balance Balance
+		if err := rows.Scan(&balance.UserID, &balance.AmountMinor); err != nil {
+			return nil, err
+		}
+		sum += balance.AmountMinor
+		out = append(out, balance)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if sum != 0 {
+		return nil, fmt.Errorf("ledger drift: group sum is %d", sum)
+	}
+	return out, nil
+}
+
 func insertSplits(ctx context.Context, tx pgx.Tx, expenseID string, revision int, splits []domain.Split) error {
 	for _, split := range splits {
 		if _, err := tx.Exec(ctx, `
@@ -476,6 +574,12 @@ func expenseFingerprint(p CreateExpenseParams, splits []domain.Split) string {
 		Amount                                  int64
 		Splits                                  []domain.Split
 	}{p.GroupID, p.PayerID, cleanText(p.Description), strings.ToUpper(p.SplitStrategy), p.AmountMinor, splits})
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func commandFingerprint(value any) string {
+	body, _ := json.Marshal(value)
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
