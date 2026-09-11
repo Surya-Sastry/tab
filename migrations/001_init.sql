@@ -81,7 +81,71 @@ CREATE TABLE ledger_entries (
 CREATE INDEX ledger_group_user_idx ON ledger_entries (group_id, user_id);
 CREATE INDEX ledger_source_idx ON ledger_entries (source_type, source_id, revision);
 
+CREATE TYPE outbox_status AS ENUM ('pending', 'publishing', 'published', 'dead');
+CREATE TABLE outbox_events (
+    event_id uuid PRIMARY KEY,
+    event_type text NOT NULL,
+    aggregate_id uuid NOT NULL REFERENCES groups(id),
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    occurred_at timestamptz NOT NULL,
+    correlation_id uuid NOT NULL,
+    causation_id uuid,
+    payload jsonb NOT NULL,
+    status outbox_status NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0,
+    available_at timestamptz NOT NULL DEFAULT now(),
+    locked_at timestamptz,
+    published_at timestamptz,
+    last_error text
+);
+CREATE INDEX outbox_scan_idx ON outbox_events (status, available_at, occurred_at);
+
+CREATE TABLE balance_projections (
+    group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id),
+    balance_minor bigint NOT NULL DEFAULT 0,
+    aggregate_version bigint NOT NULL DEFAULT 0,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (group_id, user_id)
+);
+
+CREATE TABLE processed_events (
+    consumer_name text NOT NULL,
+    event_id uuid NOT NULL,
+    processed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (consumer_name, event_id)
+);
+
+CREATE TABLE idempotency_records (
+    user_id uuid NOT NULL REFERENCES users(id),
+    endpoint text NOT NULL,
+    idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 200),
+    request_fingerprint char(64) NOT NULL,
+    status_code integer,
+    response_body jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL DEFAULT now() + interval '24 hours',
+    PRIMARY KEY (user_id, endpoint, idempotency_key)
+);
+CREATE INDEX idempotency_expiry_idx ON idempotency_records (expires_at);
+
+CREATE TABLE dlq_events (
+    event_id uuid NOT NULL,
+    consumer_name text NOT NULL,
+    payload jsonb NOT NULL,
+    error_message text NOT NULL,
+    failed_at timestamptz NOT NULL DEFAULT now(),
+    replay_count integer NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'failed' CHECK (status IN ('failed', 'replayed')),
+    PRIMARY KEY (consumer_name, event_id)
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS dlq_events;
+DROP TABLE IF EXISTS idempotency_records;
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS balance_projections;
+DROP TABLE IF EXISTS outbox_events;
 DROP TABLE IF EXISTS ledger_entries;
 DROP TABLE IF EXISTS settlements;
 DROP TYPE IF EXISTS settlement_status;
