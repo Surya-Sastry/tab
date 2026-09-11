@@ -10,8 +10,8 @@
   --surface-strong: rgba(24, 28, 39, 0.94);
   --line: rgba(255, 255, 255, 0.09);
   --muted: #949aaa;
-  --violet: #9c7cff;
-  --violet-bright: #b69cff;
+  --accent: #4ed48e;
+  --accent-bright: #86efac;
   --mint: #52e7b3;
   --coral: #ff806d;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
@@ -51,7 +51,7 @@ a {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--violet-bright);
+  outline: 2px solid var(--accent-bright);
   outline-offset: 2px;
 }
 
@@ -72,8 +72,8 @@ select:focus-visible {
   overflow: hidden;
   pointer-events: none;
   background:
-    radial-gradient(circle at var(--pointer-x, 70%) var(--pointer-y, 10%), rgba(126, 93, 255, 0.08), transparent 24%),
-    linear-gradient(180deg, #0b0d14 0%, #080a0f 70%);
+    radial-gradient(circle at var(--pointer-x, 70%) var(--pointer-y, 10%), rgba(52, 210, 125, 0.09), transparent 24%),
+    linear-gradient(180deg, #0a0f0c 0%, #080a0f 70%);
 }
 
 .ambient > span:not(.noise) {
@@ -89,7 +89,7 @@ select:focus-visible {
 .ambient-one {
   left: -22rem;
   top: -16rem;
-  background: #724cff;
+  background: #1fae5f;
 }
 
 .ambient-two {
@@ -126,6 +126,7 @@ select:focus-visible {
 }
 
 .brand-mark {
+  position: relative;
   grid-row: 1 / 3;
   display: grid;
   place-items: center;
@@ -133,9 +134,8 @@ select:focus-visible {
   height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 15px;
-  background: linear-gradient(145deg, #a98aff, #6d49ed);
-  box-shadow: 0 14px 34px rgba(119, 79, 235, 0.35);
-  transform: rotate(-7deg);
+  background: linear-gradient(145deg, #34d27d, #12833f);
+  box-shadow: 0 14px 34px rgba(24, 150, 82, 0.38);
 }
 
 .compact .brand-mark {
@@ -144,23 +144,29 @@ select:focus-visible {
   border-radius: 12px;
 }
 
-.brand-mark::before,
-.brand-mark::after,
 .brand-mark > span {
-  content: "";
-  position: absolute;
-  width: 16px;
-  height: 3px;
-  border-radius: 4px;
-  background: white;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #f2fff7;
+  text-shadow: 0 1px 2px rgba(3, 32, 15, 0.45);
 }
 
-.brand-mark::before {
-  transform: translateY(-5px);
+.compact .brand-mark > span {
+  font-size: 1.2rem;
 }
 
 .brand-mark::after {
-  transform: translateY(5px);
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #f2fff7;
+  opacity: 0.9;
 }
 
 .brand strong {
@@ -191,7 +197,7 @@ select:focus-visible {
 
 .eyebrow,
 .kicker {
-  color: #b9a9ff;
+  color: #a6efc5;
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -203,9 +209,9 @@ select:focus-visible {
   align-items: center;
   gap: 8px;
   padding: 8px 11px;
-  border: 1px solid rgba(177, 153, 255, 0.18);
+  border: 1px solid rgba(160, 238, 187, 0.18);
   border-radius: 999px;
-  background: rgba(134, 99, 244, 0.09);
+  background: rgba(60, 200, 130, 0.09);
 }
 
 .auth-story h1 {
@@ -217,7 +223,7 @@ select:focus-visible {
 
 .auth-story h1 span {
   color: transparent;
-  background: linear-gradient(100deg, #f4f1ff 5%, #9d80ff 55%, #6ce8c0);
+  background: linear-gradient(100deg, #f2fff7 5%, #79db95 55%, #6ce8c0);
   background-clip: text;
   -webkit-background-clip: text;
 }
@@ -341,8 +347,8 @@ select:focus-visible {
 .field input:focus,
 .field select:focus,
 .member-option input:focus {
-  border-color: rgba(164, 132, 255, 0.68);
-  box-shadow: 0 0 0 4px rgba(139, 103, 248, 0.1);
+  border-color: rgba(126, 224, 160, 0.68);
+  box-shadow: 0 0 0 4px rgba(62, 200, 122, 0.1);
 }
 
 .primary-button,
@@ -362,10 +368,10 @@ select:focus-visible {
   min-height: 44px;
   border-radius: 12px;
   padding: 0 18px;
-  color: #0b0714;
+  color: #04140b;
   font-weight: 760;
-  background: linear-gradient(110deg, #c8b7ff, #8f70f4 68%, #72d6bd);
-  box-shadow: 0 12px 30px rgba(119, 83, 228, 0.26);
+  background: linear-gradient(110deg, #bdf5d3, #3ec87a 68%, #72d6bd);
+  box-shadow: 0 12px 30px rgba(32, 176, 100, 0.26);
 }
 
 .primary-button:hover,
@@ -400,8 +406,8 @@ select:focus-visible {
   min-height: 32px;
   border-radius: 9px;
   padding: 0 10px;
-  color: #d8cdff;
-  background: rgba(143, 112, 244, 0.16);
+  color: #d2ffe4;
+  background: rgba(66, 202, 133, 0.16);
 }
 
 .icon-button {
@@ -486,8 +492,8 @@ select:focus-visible {
 
 .sidebar nav button.active {
   color: white;
-  background: linear-gradient(90deg, rgba(149, 116, 255, 0.2), rgba(149, 116, 255, 0.04));
-  box-shadow: inset 3px 0 #a387ff;
+  background: linear-gradient(90deg, rgba(70, 206, 138, 0.2), rgba(70, 206, 138, 0.04));
+  box-shadow: inset 3px 0 #82e09e;
 }
 
 .sidebar-foot {
@@ -531,11 +537,11 @@ select:focus-visible {
   color: white;
   font-size: 0.72rem;
   font-weight: 800;
-  background: linear-gradient(145deg, #7d5feb, #b48cff);
+  background: linear-gradient(145deg, #2abb69, #8ce8ae);
 }
 
 .avatar.soft {
-  background: linear-gradient(145deg, rgba(144, 111, 241, 0.7), rgba(64, 181, 154, 0.6));
+  background: linear-gradient(145deg, rgba(62, 198, 128, 0.7), rgba(64, 181, 154, 0.6));
 }
 
 .workspace {
@@ -600,13 +606,13 @@ select:focus-visible {
   position: absolute;
   inset: auto -30% -80% 20%;
   height: 100%;
-  background: radial-gradient(circle, rgba(145, 111, 249, 0.28), transparent 68%);
+  background: radial-gradient(circle, rgba(64, 202, 131, 0.28), transparent 68%);
   transition: transform 250ms ease;
 }
 
 .group-card:hover,
 .group-card.selected {
-  border-color: rgba(165, 139, 255, 0.36);
+  border-color: rgba(128, 226, 162, 0.36);
   transform: translateY(-3px);
   background: rgba(30, 32, 46, 0.86);
 }
@@ -649,7 +655,7 @@ select:focus-visible {
   border-radius: 14px;
   font-size: 0.73rem;
   font-weight: 800;
-  background: linear-gradient(140deg, #7e62ea, #9f82fa);
+  background: linear-gradient(140deg, #2ebd6c, #7cdb98);
 }
 
 .tone-1 {
@@ -665,8 +671,8 @@ select:focus-visible {
 }
 
 .add-card > span {
-  color: #a78cff;
-  background: rgba(143, 112, 244, 0.12);
+  color: #88e3a4;
+  background: rgba(66, 202, 133, 0.12);
 }
 
 .group-hero {
@@ -685,7 +691,7 @@ select:focus-visible {
   inset: 0;
   background:
     linear-gradient(90deg, rgba(13, 16, 24, 0.95) 30%, rgba(13, 16, 24, 0.34)),
-    radial-gradient(circle at 78% 42%, rgba(152, 113, 255, 0.34), transparent 36%);
+    radial-gradient(circle at 78% 42%, rgba(68, 204, 134, 0.34), transparent 36%);
 }
 
 .hero-copy {
@@ -762,12 +768,12 @@ select:focus-visible {
   height: 115px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 35%;
-  color: #ede8ff;
+  color: #e9fff3;
   font-size: 1.18rem;
   font-weight: 850;
   letter-spacing: 0.08em;
-  background: linear-gradient(145deg, rgba(170, 139, 255, 0.82), rgba(84, 55, 172, 0.72));
-  box-shadow: 0 25px 70px rgba(122, 85, 224, 0.48);
+  background: linear-gradient(145deg, rgba(134, 226, 164, 0.82), rgba(16, 118, 62, 0.72));
+  box-shadow: 0 25px 70px rgba(34, 172, 100, 0.48);
   transform: rotate(12deg);
 }
 
@@ -775,7 +781,7 @@ select:focus-visible {
   position: absolute;
   width: 170px;
   height: 170px;
-  border: 1px solid rgba(193, 176, 255, 0.2);
+  border: 1px solid rgba(176, 238, 200, 0.2);
   border-radius: 50%;
   animation: orbit 12s linear infinite;
 }
@@ -837,9 +843,9 @@ select:focus-visible {
   background: rgba(255, 128, 109, 0.1);
 }
 
-.metric-card.violet .metric-icon {
-  color: #ad93ff;
-  background: rgba(156, 124, 255, 0.11);
+.metric-card.green .metric-icon {
+  color: #8fe6ad;
+  background: rgba(74, 208, 142, 0.11);
 }
 
 .metric-card > div {
@@ -979,7 +985,7 @@ select:focus-visible {
   border-radius: 50%;
   font-size: 0.56rem;
   font-weight: 800;
-  background: rgba(155, 124, 255, 0.2);
+  background: rgba(74, 208, 142, 0.2);
 }
 
 .transfer-avatars span:last-child {
@@ -1004,8 +1010,8 @@ select:focus-visible {
   width: 39px;
   height: 39px;
   border-radius: 12px;
-  color: #ad93ff;
-  background: rgba(155, 124, 255, 0.11);
+  color: #8fe6ad;
+  background: rgba(74, 208, 142, 0.11);
 }
 
 .expense-amount {
@@ -1036,8 +1042,8 @@ select:focus-visible {
   width: 31px;
   height: 31px;
   border-radius: 50%;
-  color: #b7a2ff;
-  background: #242033;
+  color: #a0edbf;
+  background: #17281e;
 }
 
 .empty-inline {
@@ -1067,8 +1073,8 @@ select:focus-visible {
   width: 68px;
   height: 68px;
   border-radius: 22px;
-  color: #af95ff;
-  background: rgba(149, 116, 255, 0.12);
+  color: #95e9b4;
+  background: rgba(70, 206, 138, 0.12);
 }
 
 .empty-state h2 {
@@ -1147,8 +1153,8 @@ select:focus-visible {
 }
 
 .member-option.checked {
-  border-color: rgba(160, 132, 246, 0.36);
-  background: rgba(139, 103, 248, 0.08);
+  border-color: rgba(124, 222, 158, 0.36);
+  background: rgba(62, 200, 122, 0.08);
 }
 
 .member-option > button {
@@ -1190,14 +1196,14 @@ select:focus-visible {
 
 .checked .check-box {
   border-color: transparent;
-  background: #a990f7;
+  background: #8ce0a7;
 }
 
 .spinner {
   width: 17px;
   height: 17px;
   border: 2px solid rgba(0, 0, 0, 0.25);
-  border-top-color: #0b0714;
+  border-top-color: #04140b;
   border-radius: 50%;
   animation: spin 700ms linear infinite;
 }

@@ -65,6 +65,15 @@ function AuthScreen() {
   const [pending, setPending] = useState(false);
   const anonymousApi = useMemo(() => new TabApi(() => null), []);
 
+  function switchMode(next: "login" | "register") {
+    if (next === mode) return;
+    setMode(next);
+    setName("");
+    setEmail("");
+    setPassword("");
+    setError("");
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -114,10 +123,7 @@ function AuthScreen() {
             <button
               className={mode === item ? "active" : ""}
               key={item}
-              onClick={() => {
-                setMode(item);
-                setError("");
-              }}
+              onClick={() => switchMode(item)}
               role="tab"
               aria-selected={mode === item}
               type="button"
@@ -130,7 +136,7 @@ function AuthScreen() {
           <span className="kicker">{mode === "login" ? "Welcome back" : "Start a new tab"}</span>
           <h2>{mode === "login" ? "Pick up where you left off." : "Make shared costs simple."}</h2>
         </div>
-        <form onSubmit={submit} className="form-stack">
+        <form onSubmit={submit} className="form-stack" key={mode}>
           {mode === "register" && (
             <Field label="Your name">
               <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} />
@@ -385,7 +391,7 @@ function Overview({ group, snapshot, user, api, afterMutation }: { group: Group;
       <section className="metric-grid">
         <MetricCard icon={<ArrowUpRight />} label="Owed to you" value={formatMoney(Math.max(own, 0), group.currency)} tone="mint" />
         <MetricCard icon={<ArrowDownRight />} label="You owe" value={formatMoney(Math.max(-own, 0), group.currency)} tone="coral" />
-        <MetricCard icon={<ReceiptText />} label="Group spend" value={formatMoney(total, group.currency)} tone="violet" />
+        <MetricCard icon={<ReceiptText />} label="Group spend" value={formatMoney(total, group.currency)} tone="green" />
       </section>
       <section className="content-grid">
         <Panel title="Balance board" subtitle="Derived from the event stream" action={<span className="live-dot">Live</span>}>
@@ -632,7 +638,7 @@ function Skeleton({ className = "" }: { className?: string }) { return <div clas
 function DashboardSkeleton() { return <><section className="metric-grid"><Skeleton className="metric-card" /><Skeleton className="metric-card" /><Skeleton className="metric-card" /></section><section className="content-grid"><Skeleton className="panel tall" /><Skeleton className="panel tall" /></section></>; }
 function NavButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={active ? "active" : ""} onClick={onClick}>{icon}<span>{children}</span></button>; }
 function MiniStat({ value, label }: { value: string; label: string }) { return <div><strong>{value}</strong><span>{label}</span></div>; }
-function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-mark"><span /></span><strong>Tab</strong>{!compact && <small>Share clearly</small>}</div>; }
+function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-mark" aria-hidden="true"><span>T</span></span><strong>Tab</strong>{!compact && <small>Share clearly</small>}</div>; }
 function Ambient() { return <div className="ambient" aria-hidden="true"><span className="ambient-one" /><span className="ambient-two" /><span className="noise" /></div>; }
 function initials(value: string) { return value.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join(""); }
 function firstName(value?: string) { return value?.trim().split(/\s+/)[0] || "there"; }

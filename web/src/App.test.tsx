@@ -27,4 +27,22 @@ describe("authentication screen", () => {
     expect(screen.getByLabelText(/your name/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /create and enter/i })).toBeEnabled();
   });
+
+  it("does not carry typed credentials across a mode switch", () => {
+    renderApp();
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "someone@example.com" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "correct-horse-battery" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: /create account/i }));
+    expect(screen.getByLabelText(/email/i)).toHaveValue("");
+    expect(screen.getByLabelText(/password/i)).toHaveValue("");
+
+    fireEvent.change(screen.getByLabelText(/your name/i), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("tab", { name: /sign in/i }));
+    expect(screen.getByLabelText(/email/i)).toHaveValue("");
+    expect(screen.getByLabelText(/password/i)).toHaveValue("");
+
+    fireEvent.click(screen.getByRole("tab", { name: /create account/i }));
+    expect(screen.getByLabelText(/your name/i)).toHaveValue("");
+  });
 });
