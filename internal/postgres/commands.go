@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Surya-Sastry/tab/internal/domain"
 	"github.com/Surya-Sastry/tab/internal/event"
@@ -372,4 +373,34 @@ func (s *Store) ReverseSettlement(ctx context.Context, actorID, settlementID, co
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+type ActivityItem struct {
+	EventID     string    `bson:"eventId" json:"eventId"`
+	GroupID     string    `bson:"groupId" json:"groupId"`
+	Type        string    `bson:"type" json:"type"`
+	ActorID     string    `bson:"actorId" json:"actorId"`
+	Summary     string    `bson:"summary" json:"summary"`
+	AmountMinor int64     `bson:"amountMinor" json:"amountMinor"`
+	CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
+}
+
+func ActivityFromEnvelope(envelope event.Envelope) (ActivityItem, error) {
+	var payload struct {
+		GroupID     string `json:"groupId"`
+		ActorID     string `json:"actorId"`
+		Description string `json:"description"`
+		AmountMinor int64  `json:"amountMinor"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return ActivityItem{}, fmt.Errorf("%w: invalid activity payload", domain.ErrInvalid)
+	}
+	if payload.GroupID != envelope.AggregateID {
+		return ActivityItem{}, fmt.Errorf("%w: group mismatch", domain.ErrInvalid)
+	}
+	return ActivityItem{
+		EventID: envelope.EventID, GroupID: payload.GroupID, Type: envelope.EventType,
+		ActorID: payload.ActorID, Summary: cleanText(payload.Description),
+		AmountMinor: payload.AmountMinor, CreatedAt: envelope.OccurredAt,
+	}, nil
 }
