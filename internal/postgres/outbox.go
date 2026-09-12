@@ -3,12 +3,15 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/Surya-Sastry/tab/internal/domain"
 	"github.com/Surya-Sastry/tab/internal/event"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type OutboxItem struct {
@@ -94,6 +97,7 @@ func (s *Store) OutboxStats(ctx context.Context) (OutboxStats, error) {
 	stats.OldestAge = time.Duration(seconds * float64(time.Second))
 	return stats, err
 }
+
 func (s *Store) ApplyBalanceEvent(ctx context.Context, consumerName string, envelope event.Envelope) (bool, error) {
 	if err := envelope.Validate(); err != nil {
 		return false, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
@@ -169,6 +173,68 @@ func (s *Store) ProjectionBalances(ctx context.Context, groupID, actorID string)
 		out = append(out, balance)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PutDLQ(ctx context.Context, consumerName string, envelope event.Envelope, cause error) error {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	eventID := envelope.EventID
+	if _, err := uuid.Parse(eventID); err != nil {
+		eventID = uuid.NewString()
+	}
+	_, err = s.Pool.Exec(ctx, `
+		INSERT INTO dlq_events (event_id,consumer_name,payload,error_message)
+		VALUES ($1,$2,$3,$4)
+		ON CONFLICT (consumer_name,event_id) DO UPDATE
+		SET payload=EXCLUDED.payload,error_message=EXCLUDED.error_message,failed_at=now(),status='failed'`,
+		eventID, consumerName, body, truncate(cause.Error(), 1000))
+	return err
+}
+
+func (s *Store) ReplayDLQ(ctx context.Context, eventID string) (event.Envelope, error) {
+	var body []byte
+	err := s.Pool.QueryRow(ctx, `
+		SELECT payload FROM dlq_events WHERE event_id=$1 AND status='failed'`,
+		eventID).Scan(&body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return event.Envelope{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return event.Envelope{}, err
+	}
+	var envelope event.Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return event.Envelope{}, err
+	}
+	return envelope, nil
+}
+
+func (s *Store) MarkDLQReplayed(ctx context.Context, eventID string) error {
+	_, err := s.Pool.Exec(ctx, `
+		UPDATE dlq_events SET status='replayed',replay_count=replay_count+1
+		WHERE event_id=$1 AND status='failed'`, eventID)
+	return err
+}
+
+func (s *Store) RebuildBalances(ctx context.Context, groupID string) error {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM balance_projections WHERE group_id=$1`, groupID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO balance_projections (group_id,user_id,balance_minor,aggregate_version)
+		SELECT le.group_id,le.user_id,sum(le.amount_minor),gv.version
+		FROM ledger_entries le JOIN group_versions gv ON gv.group_id=le.group_id
+		WHERE le.group_id=$1 GROUP BY le.group_id,le.user_id,gv.version`, groupID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func truncate(value string, limit int) string {
