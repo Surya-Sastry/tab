@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/Surya-Sastry/tab/internal/domain"
 	"github.com/Surya-Sastry/tab/internal/event"
 )
 
@@ -92,6 +93,82 @@ func (s *Store) OutboxStats(ctx context.Context) (OutboxStats, error) {
 		Scan(&stats.Pending, &seconds)
 	stats.OldestAge = time.Duration(seconds * float64(time.Second))
 	return stats, err
+}
+func (s *Store) ApplyBalanceEvent(ctx context.Context, consumerName string, envelope event.Envelope) (bool, error) {
+	if err := envelope.Validate(); err != nil {
+		return false, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+	}
+	var payload struct {
+		GroupID       string               `json:"groupId"`
+		LedgerEntries []domain.LedgerEntry `json:"ledgerEntries"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return false, fmt.Errorf("%w: decode balance payload: %v", domain.ErrInvalid, err)
+	}
+	if payload.GroupID != envelope.AggregateID {
+		return false, fmt.Errorf("%w: balance payload group mismatch", domain.ErrInvalid)
+	}
+	// An expense whose participants all net to zero carries no ledger entries,
+	// because ledger_entries rejects zero deltas. A sole group member paying for
+	// themselves is the common case. That is a valid no-op, not a bad event, so
+	// it still records a processed marker and commits without touching balances.
+	var sum int64
+	for _, entry := range payload.LedgerEntries {
+		sum += entry.AmountMinor
+	}
+	if sum != 0 {
+		return false, fmt.Errorf("%w: event ledger does not conserve", domain.ErrInvalid)
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO processed_events (consumer_name,event_id) VALUES ($1,$2)
+		ON CONFLICT DO NOTHING`, consumerName, envelope.EventID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, err
+	}
+	for _, entry := range payload.LedgerEntries {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO balance_projections
+			    (group_id,user_id,balance_minor,aggregate_version)
+			VALUES ($1,$2,$3,$4)
+			ON CONFLICT (group_id,user_id) DO UPDATE
+			SET balance_minor=balance_projections.balance_minor+EXCLUDED.balance_minor,
+			    aggregate_version=GREATEST(balance_projections.aggregate_version,EXCLUDED.aggregate_version),
+			    updated_at=now()`,
+			envelope.AggregateID, entry.UserID, entry.AmountMinor, envelope.AggregateVersion)
+		if err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit(ctx)
+}
+
+func (s *Store) ProjectionBalances(ctx context.Context, groupID, actorID string) ([]Balance, error) {
+	if err := s.RequireMember(ctx, groupID, actorID); err != nil {
+		return nil, err
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT gm.user_id,COALESCE(bp.balance_minor,0)
+		FROM group_members gm LEFT JOIN balance_projections bp
+		  ON bp.group_id=gm.group_id AND bp.user_id=gm.user_id
+		WHERE gm.group_id=$1 ORDER BY gm.user_id`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Balance
+	for rows.Next() {
+		var balance Balance
+		if err := rows.Scan(&balance.UserID, &balance.AmountMinor); err != nil {
+			return nil, err
+		}
+		out = append(out, balance)
+	}
+	return out, rows.Err()
 }
 
 func truncate(value string, limit int) string {
