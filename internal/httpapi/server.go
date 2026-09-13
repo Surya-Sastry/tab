@@ -23,7 +23,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/segmentio/kafka-go"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Server struct {
@@ -71,6 +73,16 @@ func (s *Server) Routes() http.Handler {
 		protected.Get("/api/v1/groups/{groupID}/members", s.listMembers)
 		protected.Post("/api/v1/groups/{groupID}/members", s.addMember)
 		protected.Delete("/api/v1/groups/{groupID}/members/{memberID}", s.removeMember)
+		protected.Post("/api/v1/groups/{groupID}/expenses", s.createExpense)
+		protected.Get("/api/v1/groups/{groupID}/expenses", s.listExpenses)
+		protected.Get("/api/v1/expenses/{expenseID}", s.getExpense)
+		protected.Patch("/api/v1/expenses/{expenseID}", s.updateExpense)
+		protected.Delete("/api/v1/expenses/{expenseID}", s.voidExpense)
+		protected.Get("/api/v1/groups/{groupID}/balances", s.balances)
+		protected.Get("/api/v1/groups/{groupID}/suggested-settlements", s.suggestedSettlements)
+		protected.Post("/api/v1/groups/{groupID}/settlements", s.recordSettlement)
+		protected.Delete("/api/v1/settlements/{settlementID}", s.reverseSettlement)
+		protected.Get("/api/v1/groups/{groupID}/activity", s.activity)
 	})
 	return r
 }
@@ -201,6 +213,181 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+type expenseRequest struct {
+	PayerID        string         `json:"payerId"`
+	Description    string         `json:"description"`
+	AmountMinor    int64          `json:"amountMinor"`
+	SplitStrategy  string         `json:"splitStrategy"`
+	ParticipantIDs []string       `json:"participantIds"`
+	Splits         []domain.Split `json:"splits"`
+}
+
+func (s *Server) createExpense(w http.ResponseWriter, r *http.Request) {
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request expenseRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	groupID := chi.URLParam(r, "groupID")
+	expense, replayed, err := s.Store.CreateExpense(r.Context(), postgres.CreateExpenseParams{
+		GroupID: groupID, PayerID: request.PayerID, ActorID: userID(r),
+		Description: request.Description, AmountMinor: request.AmountMinor,
+		SplitStrategy: request.SplitStrategy, ParticipantIDs: request.ParticipantIDs,
+		ExactSplits: request.Splits, IdempotencyKey: key,
+		Endpoint:      "POST /api/v1/groups/{groupID}/expenses",
+		CorrelationID: correlationID(r),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	writeJSON(w, http.StatusCreated, expense)
+}
+
+func (s *Server) listExpenses(w http.ResponseWriter, r *http.Request) {
+	expenses, err := s.Store.ListExpenses(r.Context(), chi.URLParam(r, "groupID"), userID(r), 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, expenses)
+}
+
+func (s *Server) getExpense(w http.ResponseWriter, r *http.Request) {
+	expense, err := s.Store.ExpenseByID(r.Context(), chi.URLParam(r, "expenseID"), userID(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, expense)
+}
+
+func (s *Server) updateExpense(w http.ResponseWriter, r *http.Request) {
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request expenseRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	expense, err := s.Store.UpdateExpense(r.Context(), userID(r), chi.URLParam(r, "expenseID"),
+		request.Description, request.AmountMinor, request.SplitStrategy, request.ParticipantIDs,
+		request.Splits, correlationID(r), key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, expense)
+}
+
+func (s *Server) voidExpense(w http.ResponseWriter, r *http.Request) {
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Store.VoidExpense(r.Context(), userID(r), chi.URLParam(r, "expenseID"), correlationID(r), key); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) balances(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "groupID")
+	balances, err := s.Store.ProjectionBalances(r.Context(), groupID, userID(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, balances)
+}
+
+func (s *Server) suggestedSettlements(w http.ResponseWriter, r *http.Request) {
+	balances, err := s.Store.ProjectionBalances(r.Context(), chi.URLParam(r, "groupID"), userID(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	values := make(map[string]int64, len(balances))
+	for _, balance := range balances {
+		values[balance.UserID] = balance.AmountMinor
+	}
+	transfers, err := domain.SimplifyDebts(values)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, transfers)
+}
+
+func (s *Server) recordSettlement(w http.ResponseWriter, r *http.Request) {
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		FromUserID  string `json:"fromUserId"`
+		ToUserID    string `json:"toUserId"`
+		AmountMinor int64  `json:"amountMinor"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	settlement, err := s.Store.RecordSettlement(r.Context(), userID(r), chi.URLParam(r, "groupID"),
+		request.FromUserID, request.ToUserID, request.AmountMinor, correlationID(r), key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, settlement)
+}
+
+func (s *Server) reverseSettlement(w http.ResponseWriter, r *http.Request) {
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Store.ReverseSettlement(r.Context(), userID(r),
+		chi.URLParam(r, "settlementID"), correlationID(r), key); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "groupID")
+	if err := s.Store.RequireMember(r.Context(), groupID, userID(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	if s.Activity == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "activity projection unavailable"})
+		return
+	}
+	cursor, err := s.Activity.Find(r.Context(), bson.M{"groupId": groupID},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(100))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer cursor.Close(r.Context())
+	var items []postgres.ActivityItem
+	if err := cursor.All(r.Context(), &items); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
