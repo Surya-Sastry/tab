@@ -3,9 +3,12 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/Surya-Sastry/tab/internal/event"
 	"github.com/Surya-Sastry/tab/internal/observability"
 	"github.com/Surya-Sastry/tab/internal/postgres"
 	"github.com/segmentio/kafka-go"
@@ -72,4 +75,114 @@ func (p *Publisher) publishBatch(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+type Handler interface {
+	Handle(context.Context, event.Envelope) error
+}
+
+type permanentError struct{ error }
+
+func permanent(err error) error { return permanentError{error: err} }
+
+func isPermanent(err error) bool {
+	var target permanentError
+	return errors.As(err, &target)
+}
+
+type Consumer struct {
+	Reader      *kafka.Reader
+	Store       *postgres.Store
+	Name        string
+	Handler     Handler
+	MaxAttempts int
+	Logger      *slog.Logger
+	Metrics     *observability.Metrics
+}
+
+func NewReader(brokers []string, topic, groupID string) *kafka.Reader {
+	return kafka.NewReader(kafka.ReaderConfig{
+		Brokers: brokers, Topic: topic, GroupID: groupID,
+		MinBytes: 1, MaxBytes: 10e6, MaxWait: time.Second,
+		CommitInterval: 0,
+	})
+}
+
+func (c *Consumer) Run(ctx context.Context) error {
+	if c.MaxAttempts <= 0 {
+		c.MaxAttempts = 5
+	}
+	for {
+		message, err := c.Reader.FetchMessage(ctx)
+		if err != nil {
+			if c.Metrics != nil {
+				c.Metrics.ConsumerFailures.WithLabelValues(c.Name).Inc()
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			c.Logger.Warn("consumer fetch failed; reconnecting", "consumer", c.Name, "error", err)
+			if err := wait(ctx, time.Second); err != nil {
+				return err
+			}
+			continue
+		}
+		var envelope event.Envelope
+		err = json.Unmarshal(message.Value, &envelope)
+		if err == nil {
+			err = envelope.Validate()
+		}
+		if err != nil {
+			err = permanent(err)
+		} else {
+			for attempt := 1; ; attempt++ {
+				err = c.Handler.Handle(ctx, envelope)
+				if err == nil {
+					break
+				}
+				if isPermanent(err) && attempt >= c.MaxAttempts {
+					break
+				}
+				if waitErr := wait(ctx, time.Duration(min(attempt, 10))*time.Second); waitErr != nil {
+					return waitErr
+				}
+			}
+		}
+		if err != nil {
+			if c.Metrics != nil {
+				c.Metrics.ConsumerFailures.WithLabelValues(c.Name).Inc()
+				c.Metrics.DLQTotal.WithLabelValues(c.Name).Inc()
+			}
+			c.Logger.Error("event sent to dlq", "consumer", c.Name,
+				"eventId", envelope.EventID, "partition", message.Partition,
+				"offset", message.Offset, "error", err)
+			if dlqErr := c.Store.PutDLQ(ctx, c.Name, envelope, err); dlqErr != nil {
+				return fmt.Errorf("store dlq event: %w", dlqErr)
+			}
+		}
+		for attempt := 1; ; attempt++ {
+			if err := c.Reader.CommitMessages(ctx, message); err == nil {
+				break
+			} else if ctx.Err() != nil {
+				return ctx.Err()
+			} else {
+				c.Logger.Warn("offset commit failed; retrying", "consumer", c.Name,
+					"partition", message.Partition, "offset", message.Offset, "error", err)
+			}
+			if err := wait(ctx, time.Duration(min(attempt, 10))*time.Second); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func wait(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
