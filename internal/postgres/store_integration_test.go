@@ -182,3 +182,75 @@ func TestInvalidExpenseRollsBack(t *testing.T) {
 		t.Fatalf("expense count=%d, want 0", count)
 	}
 }
+
+func TestCompensatingLifecycleAndSettlement(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	alice, err := store.CreateUser(ctx, "Alice", "alice3@example.invalid", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser(ctx, "Bob", "bob3@example.invalid", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := store.CreateGroup(ctx, alice.ID, "Home", "INR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMember(ctx, group.ID, alice.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := store.CreateExpense(ctx, CreateExpenseParams{
+		GroupID: group.ID, PayerID: alice.ID, ActorID: alice.ID, Description: "Rent",
+		AmountMinor: 100, SplitStrategy: "EXACT",
+		ExactSplits:    []domain.Split{{UserID: alice.ID}, {UserID: bob.ID, AmountMinor: 100}},
+		IdempotencyKey: "create-lifecycle", Endpoint: "test/create", CorrelationID: uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateExpense(ctx, alice.ID, created.ID, "Rent corrected", 120, "EXACT", nil,
+		[]domain.Split{{UserID: alice.ID}, {UserID: bob.ID, AmountMinor: 120}},
+		uuid.NewString(), "update-lifecycle")
+	if err != nil || updated.Revision != 2 {
+		t.Fatalf("update=%#v err=%v", updated, err)
+	}
+	if err := store.VoidExpense(ctx, alice.ID, created.ID, uuid.NewString(), "void-lifecycle"); err != nil {
+		t.Fatal(err)
+	}
+	assertBalances(t, store, group.ID, alice.ID, map[string]int64{alice.ID: 0, bob.ID: 0})
+
+	second, _, err := store.CreateExpense(ctx, CreateExpenseParams{
+		GroupID: group.ID, PayerID: alice.ID, ActorID: alice.ID, Description: "Utilities",
+		AmountMinor: 100, SplitStrategy: "EXACT",
+		ExactSplits:    []domain.Split{{UserID: alice.ID}, {UserID: bob.ID, AmountMinor: 100}},
+		IdempotencyKey: "create-settlement", Endpoint: "test/create", CorrelationID: uuid.NewString(),
+	})
+	if err != nil || second.ID == "" {
+		t.Fatal(err)
+	}
+	settlement, err := store.RecordSettlement(ctx, alice.ID, group.ID, bob.ID, alice.ID, 100,
+		uuid.NewString(), "settle-lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBalances(t, store, group.ID, alice.ID, map[string]int64{alice.ID: 0, bob.ID: 0})
+	if err := store.ReverseSettlement(ctx, alice.ID, settlement.ID, uuid.NewString(), "reverse-lifecycle"); err != nil {
+		t.Fatal(err)
+	}
+	assertBalances(t, store, group.ID, alice.ID, map[string]int64{alice.ID: 100, bob.ID: -100})
+}
+
+func assertBalances(t *testing.T, store *Store, groupID, actorID string, want map[string]int64) {
+	t.Helper()
+	balances, err := store.LedgerBalances(context.Background(), groupID, actorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, balance := range balances {
+		if balance.AmountMinor != want[balance.UserID] {
+			t.Fatalf("balance %s=%d, want %d", balance.UserID, balance.AmountMinor, want[balance.UserID])
+		}
+	}
+}
