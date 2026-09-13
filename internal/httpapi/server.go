@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/Surya-Sastry/tab/internal/postgres"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/segmentio/kafka-go"
 	"go.mongodb.org/mongo-driver/bson"
@@ -64,6 +67,8 @@ func (s *Server) Routes() http.Handler {
 	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/api/v1/auth/register", s.register)
 	r.Post("/api/v1/auth/login", s.login)
+	r.Post("/internal/dlq/{eventID}/replay", s.replayDLQ)
+	r.Post("/internal/groups/{groupID}/balances/rebuild", s.rebuildBalances)
 	r.Group(func(protected chi.Router) {
 		protected.Use(s.authenticate)
 		protected.Get("/api/v1/auth/me", s.me)
@@ -83,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 		protected.Post("/api/v1/groups/{groupID}/settlements", s.recordSettlement)
 		protected.Delete("/api/v1/settlements/{settlementID}", s.reverseSettlement)
 		protected.Get("/api/v1/groups/{groupID}/activity", s.activity)
+		protected.Get("/api/v1/groups/{groupID}/ws", s.webSocket)
 	})
 	return r
 }
@@ -386,6 +392,97 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (s *Server) replayDLQ(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(r) {
+		writeError(w, domain.ErrForbidden)
+		return
+	}
+	envelope, err := s.Store.ReplayDLQ(r.Context(), chi.URLParam(r, "eventID"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	body, _ := json.Marshal(envelope)
+	if s.ReplayWriter == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "broker unavailable"})
+		return
+	}
+	if err := s.ReplayWriter.WriteMessages(r.Context(), kafka.Message{
+		Key: []byte(envelope.AggregateID), Value: body,
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.Store.MarkDLQReplayed(r.Context(), envelope.EventID); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.Logger.Info("dlq event replayed", "eventId", envelope.EventID, "actor", "admin")
+	writeJSON(w, 202, map[string]string{"status": "replayed", "eventId": envelope.EventID})
+}
+
+func (s *Server) rebuildBalances(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(r) {
+		writeError(w, domain.ErrForbidden)
+		return
+	}
+	groupID := chi.URLParam(r, "groupID")
+	if err := s.Store.RebuildBalances(r.Context(), groupID); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.Logger.Info("balance projection rebuilt", "groupId", groupID, "actor", "admin")
+	writeJSON(w, 202, map[string]string{"status": "rebuilt", "groupId": groupID})
+}
+
+func (s *Server) authorizeAdmin(r *http.Request) bool {
+	provided := r.Header.Get("X-Admin-Replay-Key")
+	return s.AdminReplayKey != "" &&
+		len(provided) == len(s.AdminReplayKey) &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte(s.AdminReplayKey)) == 1
+}
+
+func (s *Server) webSocket(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "groupID")
+	if err := s.Store.RequireMember(r.Context(), groupID, userID(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	upgrader := websocket.Upgrader{
+		HandshakeTimeout: 5 * time.Second,
+		CheckOrigin: func(request *http.Request) bool {
+			origin := request.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			parsed, err := url.Parse(origin)
+			return err == nil && parsed.Host == request.Host
+		},
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	s.Hub.Join(groupID, conn)
+	s.Metrics.WebSocketConnected.Inc()
+	defer func() {
+		s.Hub.Leave(groupID, conn)
+		s.Metrics.WebSocketConnected.Dec()
+		conn.Close()
+	}()
+	conn.SetReadLimit(1024)
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+	}
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
