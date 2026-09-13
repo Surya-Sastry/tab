@@ -6,12 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/smtp"
+	"strconv"
 	"time"
 
+	"github.com/Surya-Sastry/tab/internal/domain"
 	"github.com/Surya-Sastry/tab/internal/event"
 	"github.com/Surya-Sastry/tab/internal/observability"
 	"github.com/Surya-Sastry/tab/internal/postgres"
 	"github.com/segmentio/kafka-go"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Publisher struct {
@@ -185,4 +192,80 @@ func wait(ctx context.Context, duration time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+type BalanceHandler struct {
+	Store  *postgres.Store
+	Name   string
+	Writer *kafka.Writer
+}
+
+func (h BalanceHandler) Handle(ctx context.Context, envelope event.Envelope) error {
+	_, err := h.Store.ApplyBalanceEvent(ctx, h.Name, envelope)
+	if errors.Is(err, domain.ErrInvalid) {
+		return permanent(err)
+	}
+	if err != nil || h.Writer == nil {
+		return err
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	return h.Writer.WriteMessages(ctx, kafka.Message{
+		Key: []byte(envelope.AggregateID), Value: body,
+	})
+}
+
+type FeedHandler struct {
+	Collection *mongo.Collection
+}
+
+func EnsureFeedIndexes(ctx context.Context, collection *mongo.Collection) error {
+	_, err := collection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "eventId", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "groupId", Value: 1}, {Key: "createdAt", Value: -1}}},
+	})
+	return err
+}
+
+func (h FeedHandler) Handle(ctx context.Context, envelope event.Envelope) error {
+	item, err := postgres.ActivityFromEnvelope(envelope)
+	if err != nil {
+		return permanent(err)
+	}
+	_, err = h.Collection.UpdateOne(ctx, bson.M{"eventId": item.EventID},
+		bson.M{"$setOnInsert": item}, options.Update().SetUpsert(true))
+	return err
+}
+
+type NotificationHandler struct {
+	Store    *postgres.Store
+	Name     string
+	SMTPHost string
+	SMTPPort int
+}
+
+func (h NotificationHandler) Handle(ctx context.Context, envelope event.Envelope) error {
+	// The processed marker intentionally precedes SMTP. This avoids duplicate email
+	// but can miss one notification if SMTP fails; financial projections do not use this tradeoff.
+	tx, err := h.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO processed_events (consumer_name,event_id) VALUES ($1,$2)
+		ON CONFLICT DO NOTHING`, h.Name, envelope.EventID)
+	if err != nil {
+		tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	address := net.JoinHostPort(h.SMTPHost, strconv.Itoa(h.SMTPPort))
+	message := []byte("To: tab-local@example.invalid\r\n" +
+		"Subject: Tab activity\r\n\r\nA group expense changed.\r\n")
+	return smtp.SendMail(address, nil, "tab@example.invalid",
+		[]string{"tab-local@example.invalid"}, message)
 }
