@@ -70,6 +70,128 @@ services:
       - "127.0.0.1:8025:8025"
       - "127.0.0.1:1025:1025"
 
+  migrate:
+    image: localhost/tab-app:dev
+    build:
+      context: .
+    command: ["/app/migrate"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  api:
+    image: localhost/tab-app:dev
+    pull_policy: never
+    command: ["/app/tab-api"]
+    environment:
+      <<: *app-env
+      HTTP_ADDRESS: :8080
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY}
+      ADMIN_REPLAY_KEY: ${ADMIN_REPLAY_KEY:?set ADMIN_REPLAY_KEY}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      <<: *app-depends
+      migrate:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/tab-api", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  frontend:
+    image: localhost/tab-web:dev
+    build:
+      context: ./web
+    ports:
+      - "127.0.0.1:3000:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  outbox-publisher:
+    image: localhost/tab-app:dev
+    pull_policy: never
+    command: ["/app/outbox-publisher"]
+    environment: *app-env
+    depends_on:
+      <<: *app-depends
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  balance-consumer:
+    image: localhost/tab-app:dev
+    pull_policy: never
+    command: ["/app/consumer"]
+    environment:
+      <<: *app-env
+      WORKER_ROLE: balance
+    depends_on:
+      <<: *app-depends
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  feed-consumer:
+    image: localhost/tab-app:dev
+    pull_policy: never
+    command: ["/app/consumer"]
+    environment:
+      <<: *app-env
+      WORKER_ROLE: feed
+    depends_on:
+      <<: *app-depends
+      migrate:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  notification-consumer:
+    image: localhost/tab-app:dev
+    pull_policy: never
+    command: ["/app/consumer"]
+    environment:
+      <<: *app-env
+      WORKER_ROLE: notification
+    depends_on:
+      <<: *app-depends
+      migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
 volumes:
   postgres-data:
   mongo-data:
