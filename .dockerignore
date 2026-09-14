@@ -1,0 +1,11 @@
+.git
+.github
+.env
+bin
+coverage.out
+*.log
+scripts
+*.md
+web/node_modules
+web/dist
+web/coverage
